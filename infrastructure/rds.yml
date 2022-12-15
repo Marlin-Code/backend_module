@@ -1,0 +1,60 @@
+Description: AWS CloudFormation Sample Template for creating an Amazon RDS postgres 
+  DB instance.
+Resources: 
+  # required for rds deployments in a VPC
+  DatabaseSubnetGroup: 
+    Type: AWS::RDS::DBSubnetGroup
+    Properties: 
+      DBSubnetGroupDescription: Database subnet group
+      DBSubnetGroupName: database-subnet-group
+      SubnetIds: 
+        - !ImportValue default-vpc-PrivateSubnet1
+        - !ImportValue default-vpc-PrivateSubnet2
+
+  # the SG for the client - in our case the lambdas
+  ClientSecurityGroup:
+    Type: 'AWS::EC2::SecurityGroup'
+    Properties:
+      GroupDescription: !Ref AWS::StackName
+      VpcId: !ImportValue default-vpc-VPC
+
+  # the SG for the DB
+  DatabaseSecurityGroup:
+    Type: 'AWS::EC2::SecurityGroup'
+    Properties:
+      GroupDescription: !Ref AWS::StackName
+      VpcId: !ImportValue default-vpc-VPC
+      SecurityGroupIngress:
+      - IpProtocol: tcp
+        FromPort: 5432
+        ToPort: 5432
+        SourceSecurityGroupId: !Ref ClientSecurityGroup
+
+  PostgresDatabase:
+    Type: AWS::RDS::DBInstance
+    Properties:
+      DBInstanceIdentifier: marlindatabase
+      DBName: marlindatabase
+      DBInstanceClass: db.t3.micro
+      DBSubnetGroupName: !Ref DatabaseSubnetGroup
+      VPCSecurityGroups: 
+        - !Ref DatabaseSecurityGroup
+      AllocatedStorage: "5"
+      Engine: postgres
+      EngineVersion: "14.5"
+      MasterUsername: marlin
+      MasterUserPassword: Marlincode22
+      PreferredBackupWindow: 22:29-22:59
+      PreferredMaintenanceWindow: Mon:23:00-Tue:07:00
+
+Outputs: 
+  Database: 
+    Description: A reference to the created postgres database
+    Value: !Ref PostgresDatabase
+    Export:
+      Name: !Sub '${AWS::StackName}-Database'
+  ClientSG: 
+    Description: A reference to the SG created for lambda client access
+    Value: !Ref ClientSecurityGroup
+    Export: 
+      Name: !Sub '${AWS::StackName}-ClientSG'

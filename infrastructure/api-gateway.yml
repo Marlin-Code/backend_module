@@ -1,0 +1,252 @@
+Description: This template deploys an API Gateway with a single endpoint and 
+  backing Lambda to accomplish a "Hello World" API. 
+
+Resources: 
+  # lambda testing a db connection
+  DatabaseConnectionLambda: 
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: DatabaseConnTest
+      Description: Tests connection to an RDS instance
+      Runtime: nodejs18.x
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Handler: index.handler
+      VpcConfig:
+        SecurityGroupIds:
+          - !ImportValue rds-ClientSG
+        SubnetIds: 
+          - !ImportValue default-vpc-PrivateSubnet1
+          - !ImportValue default-vpc-PrivateSubnet2 
+      Code:
+        S3Bucket: !ImportValue s3-LambdaBucketName
+        S3Key: lambdas/conn_test.zip
+
+  # lambda serving the /hello endpoint
+  HelloWorldLambda: 
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: HelloWorldLambda
+      Description: Hello World Greeter
+      Runtime: nodejs18.x
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Handler: index.handler
+      VpcConfig:
+        SecurityGroupIds:
+          - !ImportValue rds-ClientSG
+        SubnetIds: 
+          - !ImportValue default-vpc-PrivateSubnet1
+          - !ImportValue default-vpc-PrivateSubnet2 
+      Code:
+        ZipFile: |
+          'use strict'
+          // Hello World Lambda
+          exports.handler = (event, context, callback) => {
+            console.log('Event:', JSON.stringify(event));
+            const name = event.name || 'World';
+            const response = {
+              greeting: `Hello, ${name}!`
+            };  
+            callback(null, response);
+          }
+
+  # this allows access to 
+  LambdaExecutionRole: 
+    Type: AWS::IAM::Role
+    Properties: 
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement: 
+          Effect: Allow
+          Principal:
+            Service: 
+            - lambda.amazonaws.com
+          Action:
+            - "sts:AssumeRole"
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole
+      
+  SimpleApi: 
+    Type: AWS::ApiGateway::RestApi
+    Properties: 
+      Name: Simple API
+      Description: Hello World API
+      FailOnWarnings: true
+
+  HelloWorldLambdaPermission: 
+    Type: AWS::Lambda::Permission
+    Properties: 
+      Action: "lambda:InvokeFunction"
+      FunctionName: 
+        !GetAtt HelloWorldLambda.Arn
+      Principal: apigateway.amazonaws.com
+      SourceArn: 
+        !Join
+          - ""
+          - - "arn:aws:execute-api:"
+            - !Ref AWS::Region
+            - ":"
+            - !Ref AWS::AccountId
+            - ":"
+            - !Ref SimpleApi
+            - "/*"
+  DatabaseConnectionLambdaPermission: 
+    Type: AWS::Lambda::Permission
+    Properties: 
+      Action: "lambda:InvokeFunction"
+      FunctionName: 
+        !GetAtt DatabaseConnectionLambda.Arn
+      Principal: apigateway.amazonaws.com
+      SourceArn: 
+        !Join
+          - ""
+          - - "arn:aws:execute-api:"
+            - !Ref AWS::Region
+            - ":"
+            - !Ref AWS::AccountId
+            - ":"
+            - !Ref SimpleApi
+            - "/*"
+
+  ApiGatewayCloudWatchLogsRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument: 
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - apigateway.amazonaws.com
+            Action: 
+              - "sts:AssumeRole"
+      Policies:
+        - PolicyName: ApiGatewayLogsPolicy
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: 
+                  - "logs:CreateLogGroup"
+                  - "logs:CreateLogStream"
+                  - "logs:DescribeLogGroups"
+                  - "logs:DescribeLogStreams"
+                  - "logs:PutLogEvents"
+                  - "logs:GetLogEvents"
+                  - "logs:FilterLogEvent"
+                Resource: "*"
+
+  ApiGatewayAccount: 
+    Type: AWS::ApiGateway::Account
+    Properties:
+      CloudWatchRoleArn: !GetAtt ApiGatewayCloudWatchLogsRole.Arn 
+
+  DevelopmentStage:
+    DependsOn: ApiGatewayAccount
+    Type: AWS::ApiGateway::Stage
+    Properties:
+      StageName: dev
+      DeploymentId: !Ref ApiDeployment
+      MethodSettings:
+        - ResourcePath: '/*'
+          HttpMethod: '*'
+          MetricsEnabled: false
+          DataTraceEnabled: false
+      RestApiId: !Ref SimpleApi
+
+  ApiDeployment:
+    Type: AWS::ApiGateway::Deployment
+    DependsOn: 
+      - HelloWorldRequest
+      - DBConnectionRequest
+    Properties:
+      RestApiId: 
+        Ref: SimpleApi
+  
+  HelloWorldResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: 
+        Ref: SimpleApi
+      ParentId: !GetAtt SimpleApi.RootResourceId
+      PathPart: hello
+
+  HelloWorldRequest: 
+    DependsOn: 
+      - HelloWorldLambdaPermission
+    Type: AWS::ApiGateway::Method
+    Properties:
+      AuthorizationType: NONE
+      HttpMethod: GET
+      Integration:
+        Type: AWS
+        IntegrationHttpMethod: POST
+        Uri:
+          !Join
+            - ""
+            - - "arn:aws:apigateway:"
+              - !Ref AWS::Region
+              - ":lambda:path/2015-03-31/functions/"
+              - !GetAtt HelloWorldLambda.Arn
+              - "/invocations"
+        IntegrationResponses:
+          - StatusCode: 200
+        RequestTemplates: 
+          "application/json": 
+            !Join 
+              - ""
+              - - "{"
+                - "\"name\": \"$input.params('name')\""
+                - "}"
+      RequestParameters:
+        method.request.querystring.name: false
+      ResourceId: !Ref HelloWorldResource
+      RestApiId: !Ref SimpleApi
+      MethodResponses: 
+        - StatusCode: 200
+
+  DBConnectionResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: 
+        Ref: SimpleApi
+      ParentId: !GetAtt SimpleApi.RootResourceId
+      PathPart: db
+
+  DBConnectionRequest: 
+    DependsOn: 
+      - DatabaseConnectionLambdaPermission
+    Type: AWS::ApiGateway::Method
+    Properties:
+      AuthorizationType: NONE
+      HttpMethod: GET
+      Integration:
+        Type: AWS
+        IntegrationHttpMethod: POST
+        Uri:
+          !Join
+            - ""
+            - - "arn:aws:apigateway:"
+              - !Ref AWS::Region
+              - ":lambda:path/2015-03-31/functions/"
+              - !GetAtt DatabaseConnectionLambda.Arn
+              - "/invocations"
+        IntegrationResponses:
+          - StatusCode: 200
+      RequestParameters:
+        method.request.querystring.name: false
+      ResourceId: !Ref DBConnectionResource
+      RestApiId: !Ref SimpleApi
+      MethodResponses: 
+        - StatusCode: 200
+
+Outputs:
+  RootUrl:
+    Description: "Root URL of the API gateway"
+    Value: 
+      !Join
+        - ""
+        - - "https://"
+          - !Ref SimpleApi
+          - ".execute-api."
+          - !Ref AWS::Region
+          - ".amazonaws.com"

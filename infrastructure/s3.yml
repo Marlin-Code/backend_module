@@ -1,0 +1,14 @@
+Description: This cft serves to simply create an s3 bucket for the project. This 
+  bucket will be used for things like housing lambda code for deployments. 
+
+Resources:
+  LambdaCodeBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      AccessControl: Private
+
+Outputs: 
+  LambdaBucketName:
+    Value: !Ref LambdaCodeBucket
+    Export: 
+      Name: !Sub '${AWS::StackName}-LambdaBucketName'
